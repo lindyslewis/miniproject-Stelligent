@@ -9,8 +9,8 @@
 ## how to run
 
 ```
-git clone https://github.com/stelligent/miniproject-LEWIS-LINDY.git  
-cd miniproject-LEWIS-LINDY
+git clone https://github.com/lindyslewis/miniproject-Stelligent.git  
+cd miniproject-Stelligent
 bundle install
 ruby pipeline.rb deploy
 ```
