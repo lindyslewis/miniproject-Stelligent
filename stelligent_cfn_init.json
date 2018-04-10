@@ -1,0 +1,192 @@
+{
+  "AWSTemplateFormatVersion" : "2010-09-09",
+  "Description" : "Cloud Formation Template that uses cfn-init to provision an apache server",
+  "Resources" : {
+
+    "MyVpc":{
+      "Type" : "AWS::EC2::VPC",
+      "Properties" : {
+        "CidrBlock" : "10.0.0.0/16"
+       }
+    },
+    "InetGateway": {
+      "Type": "AWS::EC2::InternetGateway",
+      "DependsOn": ["MyVpc"]
+    },
+    "AttachGateway": {
+      "Type": "AWS::EC2::VPCGatewayAttachment",
+      "DependsOn": ["MyVpc", "InetGateway"],
+      "Properties": {
+        "VpcId": {"Ref": "MyVpc"},
+        "InternetGatewayId": {"Ref": "InetGateway"}
+      }
+    },
+    "MySubnet" : {
+       "Type" : "AWS::EC2::Subnet",
+       "DependsOn": ["MyVpc"],
+       "Properties" : {
+          "VpcId" : { "Ref" : "MyVpc" },
+          "CidrBlock" : "10.0.0.0/24",
+          "AvailabilityZone" : "us-east-1a"
+       }
+    },
+   "PublicRouteTable": {
+      "Type": "AWS::EC2::RouteTable",
+      "DependsOn": ["MyVpc", "AttachGateway"],
+      "Properties": {
+        "VpcId": {"Ref": "MyVpc"}
+      }
+    },
+    "PublicRoute": {
+      "Type": "AWS::EC2::Route",
+      "DependsOn": ["PublicRouteTable"],
+      "Properties": {
+        "DestinationCidrBlock": "0.0.0.0/0",
+        "RouteTableId": {"Ref": "PublicRouteTable"},
+        "GatewayId": {"Ref": "InetGateway"}
+      },
+      "DependsOn": "AttachGateway"
+    },
+    "RouteTableAssociation": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "DependsOn": ["PublicRouteTable", "MySubnet"],
+      "Properties": {
+        "RouteTableId": {"Ref": "PublicRouteTable"},
+        "SubnetId": {"Ref": "MySubnet"}
+      }
+    },
+
+    "ElbSecurityGroup" : {
+       "Type" : "AWS::EC2::SecurityGroup",
+       "Properties" : {
+          "GroupDescription" : "Security group for public ELB",
+          "VpcId" : {"Ref" : "MyVpc"},
+          "SecurityGroupIngress" : [{
+                "IpProtocol" : "tcp",
+                "FromPort" : "80",
+                "ToPort" : "80",
+                "CidrIp" : "0.0.0.0/0"
+             }],
+          "SecurityGroupEgress" : [{
+             "IpProtocol" : "tcp",
+             "FromPort" : "0",
+             "ToPort" : "65535",
+             "CidrIp" : "0.0.0.0/0"
+          }]
+       }
+    },
+
+    "InstanceSecurityGroup" : {
+       "Type" : "AWS::EC2::SecurityGroup",
+       "Properties" : {
+          "GroupDescription" : "Allow http to client host",
+          "VpcId" : {"Ref" : "MyVpc"},
+          "SecurityGroupIngress" : [{
+                "IpProtocol" : "tcp",
+                "FromPort" : "80",
+                "ToPort" : "80",
+                "CidrIp" : "0.0.0.0/0"
+             }],
+          "SecurityGroupEgress" : [{
+             "IpProtocol" : "tcp",
+             "FromPort" : "0",
+             "ToPort" : "65535",
+             "CidrIp" : "0.0.0.0/0"
+          }]
+       }
+    },
+    "MyLaunchConfig" :{
+       "Type" : "AWS::AutoScaling::LaunchConfiguration",
+       "Properties" : {
+          "AssociatePublicIpAddress" : "true",
+          "ImageId" : "ami-55ef662f",
+          "InstanceType" : "t2.micro",
+          "SecurityGroups" : [ {"Ref" : "InstanceSecurityGroup"} ],
+          "UserData"       : { "Fn::Base64" : { "Fn::Join" : ["", [
+             "#!/bin/bash -xe\n",
+             "yum update -y aws-cfn-bootstrap\n",
+             "/opt/aws/bin/cfn-init -v ",
+             "         --stack ", { "Ref" : "AWS::StackName" },
+             "         --resource MyLaunchConfig ",
+             "         --configsets mini_project_install ",
+             "         --region ", { "Ref" : "AWS::Region" }, "\n"
+		      ]]}}
+        },
+
+        "Metadata" : {
+          "AWS::CloudFormation::Init" : {
+            "configSets" : {
+              "mini_project_install" : ["install_server"]
+            },
+
+            "install_server" : {
+              "packages" : {
+                "yum" : {
+                  "httpd" : []
+                }
+              },
+
+              "files" : {
+                "/var/www/html/index.html" : {
+                  "content" : { "Fn::Join" : ["", [
+                    "<h1>Automation for the People</h1>\n"
+                  ]]},
+
+                  "mode" : "0644",
+                  "owner" : "root",
+                  "group" : "root"
+                }
+              },
+
+              "services" : {
+                "sysvinit" : {
+                 "httpd" : {
+                   "enabled" : "true",
+                   "ensureRunning" : "true"
+                 }
+                }
+              }
+            }
+          }
+        }
+      },
+      "MyElasticLoadBalancer":{
+          "Type" : "AWS::ElasticLoadBalancing::LoadBalancer",
+          "DependsOn": ["MySubnet"],
+          "Properties" : {
+             "Subnets": [{"Ref" : "MySubnet"}],
+             "Listeners" : [ {
+                  "LoadBalancerPort" : "80",
+                  "InstancePort" : "80",
+                  "Protocol" : "HTTP"
+             }],
+            "SecurityGroups" : [{"Ref" : "ElbSecurityGroup"}]
+          }
+       },
+
+      "MyASG" : {
+         "Type" : "AWS::AutoScaling::AutoScalingGroup",
+         "Properties" : {
+            "DesiredCapacity" : "1",
+            "HealthCheckType" : "EC2",
+            "LaunchConfigurationName" :{ "Ref" : "MyLaunchConfig" },
+            "MaxSize" : "1",
+            "MinSize" : "1",
+            "LoadBalancerNames" : [ { "Ref" : "MyElasticLoadBalancer" } ] ,
+            "VPCZoneIdentifier" : [{"Ref":"MySubnet"}]
+         }
+      }
+    },
+
+    "Outputs" : {
+      "URL" : {
+        "Description" : "The URL of the Website",
+        "Value" : { "Fn::Join" : [ "", [ "http://", { "Fn::GetAtt": [ "MyElasticLoadBalancer", "DNSName"]}]]}
+      },
+      "ELBName" : {
+        "Description" : "The name of the Elastic Load Balancer",
+        "Value" : { "Ref" : "MyElasticLoadBalancer" }
+      }
+    }
+
+}
